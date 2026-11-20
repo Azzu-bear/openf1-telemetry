@@ -247,6 +247,73 @@ def speed_on_track(
     return out
 
 
+def official_mini_sector_count(lap_row: pd.Series) -> int | None:
+    """How many mini-sectors the timing feed reports for this lap.
+
+    `/laps` returns `segments_sector_1/2/3` as arrays of status codes, one per
+    mini-sector (2048 yellow, 2049 green/personal best, 2051 purple/session
+    best, 2064 pit lane). The codes themselves are judged against session bests
+    rather than head to head, so they are no use for dominance, but their
+    *count* tells us the circuit's real timing granularity. Las Vegas splits
+    6 + 7 + 10 into 23.
+    """
+    total = 0
+    for column in ("segments_sector_1", "segments_sector_2", "segments_sector_3"):
+        segments = lap_row.get(column)
+        if not hasattr(segments, "__len__"):
+            return None
+        total += len(segments)
+    return total or None
+
+
+def mini_sector_dominance(
+    reference: pd.DataFrame, challenger: pd.DataFrame, count: int
+) -> pd.DataFrame:
+    """Who was quicker through each mini-sector, and by how much.
+
+    The lap is cut into `count` equal slices of distance and each driver's
+    elapsed time through every slice is measured, so a winner falls out of
+    comparing the two.
+
+    A caveat worth knowing: the timing feed publishes how many mini-sectors a
+    circuit has but never where they start and end, so equal slices are an
+    approximation of the real loop positions. The count is honest, the exact
+    boundaries are not.
+
+    Returns one row per mini-sector: number, start, end, mid, time_ref,
+    time_cha, margin_s, reference_wins.
+    """
+    if reference.empty or challenger.empty or count < 1:
+        return pd.DataFrame()
+
+    edges = np.linspace(0, 1, count + 1)
+    ref_at = np.interp(edges, reference["lap_fraction"], reference["t_s"])
+    cha_at = np.interp(edges, challenger["lap_fraction"], challenger["t_s"])
+
+    ref_split = np.diff(ref_at)
+    cha_split = np.diff(cha_at)
+
+    return pd.DataFrame(
+        {
+            "number": np.arange(1, count + 1),
+            "start": edges[:-1],
+            "end": edges[1:],
+            "mid": (edges[:-1] + edges[1:]) / 2,
+            "time_ref": ref_split,
+            "time_cha": cha_split,
+            # Positive margin means the challenger lost time in this slice.
+            "margin_s": cha_split - ref_split,
+            "reference_wins": ref_split < cha_split,
+        }
+    )
+
+
+def assign_mini_sector(lap_fraction: pd.Series, count: int) -> np.ndarray:
+    """Which mini-sector (1-based) each point along the lap falls into."""
+    index = np.floor(np.asarray(lap_fraction, dtype=float) * count).astype(int)
+    return np.clip(index, 0, count - 1) + 1
+
+
 def corner_markers(circuit_key: int, year: int, path: pd.DataFrame) -> pd.DataFrame:
     """Numbered corners snapped onto a measured racing line, with label offsets.
 

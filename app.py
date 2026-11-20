@@ -323,9 +323,15 @@ with tab_map:
             "Coverage of the /location endpoint is thinner than for car telemetry."
         )
     else:
+        DOMINANCE = "Mini-sector dominance"
         mode = st.radio(
             "Colour the racing line by",
-            [f"Speed delta ({code_b} minus {code_a})", f"{code_a} speed", f"{code_b} speed"],
+            [
+                f"Speed delta ({code_b} minus {code_a})",
+                DOMINANCE,
+                f"{code_a} speed",
+                f"{code_b} speed",
+            ],
             horizontal=True,
         )
         annotate = st.checkbox("Label turns and sector boundaries", value=True)
@@ -336,7 +342,27 @@ with tab_map:
             else pd.DataFrame()
         )
 
-        if mode.startswith("Speed delta"):
+        if mode == DOMINANCE:
+            official = tel.official_mini_sector_count(row_a)
+            count = st.slider(
+                "Mini-sectors",
+                min_value=6,
+                max_value=40,
+                value=official or 20,
+                help=(
+                    f"The timing feed reports {official} mini-sectors here."
+                    if official
+                    else "The timing feed did not report a mini-sector count for this lap."
+                ),
+            )
+            dominance = tel.mini_sector_dominance(map_a, map_b, count)
+            mapped["mini_sector"] = tel.assign_mini_sector(mapped["lap_fraction"], count)
+            winners = dominance.set_index("number")["reference_wins"]
+            mapped["ref_wins"] = mapped["mini_sector"].map(winners).fillna(False)
+            mapped["margin_s"] = mapped["mini_sector"].map(
+                dominance.set_index("number")["margin_s"]
+            )
+        elif mode.startswith("Speed delta"):
             values = mapped["speed_delta"]
             limit = max(abs(values.min()), abs(values.max())) or 1
             # Diverging scale running between the two teams' own colours, so a
@@ -351,29 +377,57 @@ with tab_map:
             colour_range = (float(values.min()), float(values.max()))
             bar_title = "km/h"
 
-        figure = go.Figure(
-            go.Scatter(
-                x=mapped["x_m"],
-                y=mapped["y_m"],
-                mode="markers",
-                marker=dict(
-                    size=9,
-                    color=values,
-                    colorscale=scale,
-                    cmin=colour_range[0],
-                    cmax=colour_range[1],
-                    colorbar=dict(title=bar_title, thickness=14),
-                ),
-                customdata=mapped[["distance_m", "speed_ref", "speed_cha", "speed_delta"]],
-                hovertemplate=(
-                    "%{customdata[0]:.0f} m into the lap<br>"
-                    + f"{code_a}: " + "%{customdata[1]:.0f} km/h<br>"
-                    + f"{code_b}: " + "%{customdata[2]:.0f} km/h<br>"
-                    "delta: %{customdata[3]:+.0f} km/h<extra></extra>"
-                ),
-                showlegend=False,
+        figure = go.Figure()
+
+        if mode == DOMINANCE:
+            # Two flat-coloured traces rather than a colour scale, because the
+            # answer per mini-sector is categorical: one driver or the other.
+            for wins, code, colour in ((True, code_a, colour_a), (False, code_b, colour_b)):
+                part = mapped[mapped["ref_wins"] == wins]
+                if part.empty:
+                    continue
+                figure.add_trace(
+                    go.Scatter(
+                        x=part["x_m"],
+                        y=part["y_m"],
+                        mode="markers",
+                        name=code,
+                        marker=dict(size=9, color=colour),
+                        customdata=part[["mini_sector", "distance_m", "margin_s"]],
+                        hovertemplate=(
+                            "Mini-sector %{customdata[0]}<br>"
+                            "%{customdata[1]:.0f} m into the lap<br>"
+                            f"{code} quicker by " + "%{customdata[2]:.3f} s<extra></extra>"
+                        ),
+                    )
+                )
+            figure.update_layout(
+                legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0)
             )
-        )
+        else:
+            figure.add_trace(
+                go.Scatter(
+                    x=mapped["x_m"],
+                    y=mapped["y_m"],
+                    mode="markers",
+                    marker=dict(
+                        size=9,
+                        color=values,
+                        colorscale=scale,
+                        cmin=colour_range[0],
+                        cmax=colour_range[1],
+                        colorbar=dict(title=bar_title, thickness=14),
+                    ),
+                    customdata=mapped[["distance_m", "speed_ref", "speed_cha", "speed_delta"]],
+                    hovertemplate=(
+                        "%{customdata[0]:.0f} m into the lap<br>"
+                        + f"{code_a}: " + "%{customdata[1]:.0f} km/h<br>"
+                        + f"{code_b}: " + "%{customdata[2]:.0f} km/h<br>"
+                        "delta: %{customdata[3]:+.0f} km/h<extra></extra>"
+                    ),
+                    showlegend=False,
+                )
+            )
 
         # Mark the start of the lap so the direction of travel is readable.
         figure.add_trace(
@@ -443,7 +497,46 @@ with tab_map:
         )
         st.plotly_chart(figure, use_container_width=True)
 
-        if mode.startswith("Speed delta"):
+        if mode == DOMINANCE and not dominance.empty:
+            ref_wins = int(dominance["reference_wins"].sum())
+            cha_wins = len(dominance) - ref_wins
+
+            left, right = st.columns(2)
+            left.metric(f"{code_a} mini-sectors won", f"{ref_wins} of {len(dominance)}")
+            right.metric(f"{code_b} mini-sectors won", f"{cha_wins} of {len(dominance)}")
+
+            bars = go.Figure(
+                go.Bar(
+                    x=dominance["number"],
+                    y=dominance["margin_s"],
+                    marker_color=[
+                        colour_a if wins else colour_b for wins in dominance["reference_wins"]
+                    ],
+                    hovertemplate=(
+                        "Mini-sector %{x}<br>margin %{y:+.3f} s<extra></extra>"
+                    ),
+                )
+            )
+            bars.update_layout(
+                height=260,
+                xaxis_title="Mini-sector",
+                yaxis_title=f"{code_b} minus {code_a} (s)",
+                margin=dict(l=60, r=20, t=10, b=40),
+                font=dict(family=FONT_STACK),
+                bargap=0.15,
+            )
+            st.plotly_chart(bars, use_container_width=True)
+
+            st.caption(
+                f"Bars above zero are mini-sectors {code_a} won. They sum to "
+                f"{dominance['margin_s'].sum():+.3f} s, which is the whole lap time "
+                "difference, so nothing is unaccounted for. The timing feed publishes "
+                "how many mini-sectors a circuit has but never where they begin and "
+                "end, so these are equal slices of distance: the count is real, the "
+                "exact boundaries are an approximation."
+            )
+
+        elif mode.startswith("Speed delta"):
             best = mapped.loc[mapped["speed_delta"].idxmax()]
             worst = mapped.loc[mapped["speed_delta"].idxmin()]
             left, right = st.columns(2)

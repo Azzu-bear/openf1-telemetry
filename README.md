@@ -11,7 +11,7 @@ itself with whoever was carrying more speed through each corner.
 Four tabs:
 
 - **Telemetry** - speed, throttle, brake, gear and RPM overlaid against distance, with a delta trace on top.
-- **Track map** - the racing line drawn from x/y position data, each point tinted toward the team colour of the faster driver there, with every turn numbered and the two sector boundaries marked.
+- **Track map** - the racing line drawn from x/y position data, with every turn numbered and the two sector boundaries marked. Colour it by speed delta, by either driver's absolute speed, or by mini-sector dominance.
 - **Lap times** - both drivers' lap times across the session, pit stops marked, tyre compound and age on hover.
 - **Sectors** - sector-by-sector comparison plus the session's best sectors.
 
@@ -119,17 +119,36 @@ position at that moment puts the boundary on the timing loop. Each one is then
 drawn perpendicular to the direction of travel so it reads as a line across the
 track.
 
+### Mini-sector dominance
+
+`/laps` returns `segments_sector_1/2/3`, arrays of status codes with one entry
+per mini-sector: 2048 yellow, 2049 green (personal best), 2051 purple (session
+best), 2064 pit lane. Those codes are judged against session bests, not head to
+head, so they cannot answer "who was quicker here". Their *count* can though,
+and it gives the circuit's real timing granularity: Las Vegas splits 6 + 7 + 10
+into 23 mini-sectors.
+
+So `mini_sector_dominance()` takes that count, cuts the lap into that many
+equal slices of distance, and measures each driver's elapsed time through
+every slice. The per-slice margins sum to the full lap time difference, which
+is the check that nothing has gone missing.
+
+The honest caveat, which the app states on screen: the feed publishes how many
+mini-sectors exist but never where they begin and end. The count is real, the
+exact boundaries are an approximation.
+
 ## Things to build next
 
-- **Mini-sector dominance.** `/laps` returns `segments_sector_1/2/3` as arrays of
-  status codes (2048 = yellow, 2049 = green, 2051 = purple). Decode those into a
-  per-mini-sector "who was fastest" strip.
 - **Stint degradation model.** Fit lap time against tyre age per compound and
   plot the degradation slope. This is the backbone of real strategy work.
 - **Undercut calculator.** Combine `/pit` stationary time with the lap time delta
   on fresh versus old tyres to estimate whether an undercut would have worked.
-- **Live mode.** OpenF1 serves live data during a session. Poll `/intervals` and
-  `/laps` on a timer and the same dashboard becomes a live timing screen.
+- **More than two drivers.** The mini-sector dominance view is head to head, but
+  the same comparison across a whole field gives the classic grid-wide dominance
+  map.
+- **Live mode.** Needs OpenF1's sponsor tier, which adds MQTT and WebSocket
+  transports. Subscribe instead of polling and the same dashboard becomes a live
+  timing screen.
 
 ## Data source
 
